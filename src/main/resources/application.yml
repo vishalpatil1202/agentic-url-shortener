@@ -1,0 +1,55 @@
+server:
+  port: 8080
+  error:
+    include-message: always
+
+spring:
+  application:
+    name: agentic-url-shortener
+  datasource:
+    url: jdbc:h2:file:./data/shortener;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;AUTO_SERVER=TRUE
+    driver-class-name: org.h2.Driver
+    username: sa
+    password:
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+    properties:
+      hibernate:
+        format_sql: true
+  h2:
+    console:
+      enabled: true
+      path: /h2-console
+  flyway:
+    enabled: true
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus,metrics
+  endpoint:
+    health:
+      show-details: always
+  health:
+    defaults:
+      enabled: true
+
+springdoc:
+  swagger-ui:
+    path: /swagger-ui.html
+  api-docs:
+    path: /v3/api-docs
+
+app:
+  shortener:
+    code-length: 7
+    max-url-length: 2048
+    rate-limit-per-minute: 30
+    hmac-secret: local-dev-hmac-change-me
+  orchestrator:
+    max-retries: 3
+    retry-backoff-ms: 80
+    artifact-dir: ./data/artifacts

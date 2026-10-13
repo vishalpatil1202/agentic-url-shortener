@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Agentic SDLC Console</title>
+  <style>
+    :root { font-family: "Segoe UI", system-ui, sans-serif; color: #10233a; background: #f4f7fb; }
+    body { margin: 0; }
+    header { background: #0b3a66; color: white; padding: 16px 24px; }
+    header p { margin: 4px 0 0; opacity: .85; font-size: 14px; }
+    main { display: grid; grid-template-columns: 320px 1fr; gap: 16px; padding: 16px; }
+    section { background: white; border-radius: 12px; padding: 16px; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+    h2 { margin: 0 0 12px; font-size: 16px; }
+    button, select, textarea { font: inherit; }
+    button { background: #0b3a66; color: white; border: 0; border-radius: 8px; padding: 8px 12px; cursor: pointer; }
+    button.secondary { background: #5b6b7c; }
+    button.danger { background: #9b1c1c; }
+    textarea, select { width: 100%; box-sizing: border-box; margin: 6px 0 10px; padding: 8px; border-radius: 8px; border: 1px solid #c9d4e2; }
+    .run { padding: 8px; border-radius: 8px; cursor: pointer; margin-bottom: 6px; background: #eef3f9; }
+    .run.active { outline: 2px solid #0b3a66; }
+    .pill { display: inline-block; padding: 2px 8px; border-radius: 999px; background: #dbeafe; font-size: 12px; }
+    .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+    .stage { border: 1px solid #d5deea; border-radius: 10px; padding: 10px; }
+    .muted { color: #5b6b7c; font-size: 13px; }
+    pre { white-space: pre-wrap; background: #0f172a; color: #e2e8f0; padding: 12px; border-radius: 8px; max-height: 280px; overflow: auto; }
+    .approvals button { margin-right: 6px; margin-top: 6px; }
+  </style>
+</head>
+<body>
+<header>
+  <h1>Agentic URL Shortener — SDLC Console</h1>
+  <p>Humans approve high-impact stages. Agents execute the rest under policy gates.</p>
+</header>
+<main>
+  <section>
+    <h2>Start a scenario</h2>
+    <label>Scenario</label>
+    <select id="scenario">
+      <option>GREENFIELD</option>
+      <option>BROWNFIELD</option>
+      <option>AMBIGUOUS</option>
+    </select>
+    <label>Autonomy</label>
+    <select id="autonomy">
+      <option>SUPERVISED</option>
+      <option>FULL_AUTO</option>
+      <option>MANUAL</option>
+    </select>
+    <label>Requirement</label>
+    <textarea id="requirement" rows="4" placeholder="Leave blank to use the scenario default"></textarea>
+    <label><input type="checkbox" id="defaults" /> Accept default assumptions (ambiguous)</label>
+    <p><button onclick="startRun()">Start run</button></p>
+    <h2>Runs</h2>
+    <div id="runs"></div>
+    <h2>Metrics</h2>
+    <div id="metrics" class="muted"></div>
+  </section>
+  <section>
+    <div id="detail"><p class="muted">Select a run to inspect the DAG, lineage, and approvals.</p></div>
+  </section>
+</main>
+<script>
+  let selected = null;
+  async function api(path, opts) {
+    const res = await fetch(path, Object.assign({ headers: { "Content-Type": "application/json" } }, opts || {}));
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  }
+  async function refresh() {
+    const runs = await api("/api/v1/orchestrator/runs");
+    document.getElementById("runs").innerHTML = runs.map(r => `
+      <div class="run ${r.id===selected?'active':''}" onclick="openRun('${r.id}')">
+        <div><strong>${r.scenario}</strong> <span class="pill">${r.status}</span></div>
+        <div class="muted">${r.id.slice(0,8)} · ${r.autonomyMode}</div>
+      </div>`).join("") || "<p class='muted'>No runs yet</p>";
+    const m = await api("/api/v1/orchestrator/metrics");
+    document.getElementById("metrics").textContent =
+      `success rate ${(m.successRate*100).toFixed(0)}% · retries ${m.retries} · rollbacks ${m.rollbacks} · mean ${m.meanLatencyMs.toFixed(0)} ms`;
+    if (selected) await openRun(selected, true);
+  }
+  async function startRun() {
+    const body = {
+      scenario: document.getElementById("scenario").value,
+      autonomyMode: document.getElementById("autonomy").value,
+      requirement: document.getElementById("requirement").value || null,
+      acceptDefaultAssumptions: document.getElementById("defaults").checked
+    };
+    const run = await api("/api/v1/orchestrator/runs", { method: "POST", body: JSON.stringify(body) });
+    selected = run.id;
+    setTimeout(refresh, 400);
+  }
+  async function openRun(id, silent) {
+    selected = id;
+    const d = await api("/api/v1/orchestrator/runs/" + id);
+    if (!silent) await refresh();
+    const pending = d.approvals.filter(a => a.status === "PENDING");
+    document.getElementById("detail").innerHTML = `
+      <h2>${d.run.scenario} · ${d.run.status}</h2>
+      <p class="muted">${d.run.id} · autonomy ${d.run.autonomyMode} · context v${d.run.contextVersion}</p>
+      <p>
+        <button class="danger" onclick="stopRun('${d.run.id}')">Safe stop</button>
+        <button class="secondary" onclick="replan('${d.run.id}')">Replan with new requirement</button>
+      </p>
+      <div class="grid">${d.stages.map(s => `
+        <div class="stage"><strong>${s.stageId}</strong><div class="pill">${s.status}</div>
+        <div class="muted">attempt ${s.attempt}</div></div>`).join("")}</div>
+      <h2>Approvals</h2>
+      ${pending.length ? pending.map(a => `
+        <div class="approvals"><div><strong>${a.stageId}</strong>: ${a.reason}</div>
+        <button onclick="decide('${d.run.id}','${a.id}',true)">Approve</button>
+        <button class="danger" onclick="decide('${d.run.id}','${a.id}',false)">Reject</button>
+        </div>`).join("") : "<p class='muted'>No pending approvals</p>"}
+      <h2>Decision lineage</h2>
+      <pre>${d.lineage.map(x => x.createdAt + " [" + x.actor + "] " + x.action + " — " + x.rationale).join("\n")}</pre>
+    `;
+  }
+  async function decide(runId, approvalId, approved) {
+    await api(`/api/v1/orchestrator/runs/${runId}/approvals/${approvalId}`, {
+      method: "POST", body: JSON.stringify({ approved, actor: "console-operator", comment: approved ? "approved from console" : "rejected from console" })
+    });
+    setTimeout(refresh, 400);
+  }
+  async function stopRun(id) {
+    await api(`/api/v1/orchestrator/runs/${id}/stop`, { method: "POST", body: "{}" });
+    setTimeout(refresh, 300);
+  }
+  async function replan(id) {
+    const requirement = prompt("New or changed requirement text?");
+    if (!requirement) return;
+    await api(`/api/v1/orchestrator/runs/${id}/replan`, { method: "POST", body: JSON.stringify({ requirement }) });
+    setTimeout(refresh, 400);
+  }
+  refresh();
+  setInterval(refresh, 2500);
+</script>
+</body>
+</html>
